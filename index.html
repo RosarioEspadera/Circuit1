@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Full Web LTspice</title>
+<style>
+  body { margin:0; font-family:Arial, sans-serif; background:#222; color:#fff; display:flex; flex-direction:column; }
+  header { background:#333; padding:10px; text-align:center; }
+  #toolbar { display:flex; flex-wrap:wrap; justify-content:center; background:#444; padding:10px; gap:5px; }
+  #toolbar button { margin:5px; padding:8px; font-size:0.9em; cursor:pointer; flex:1 1 auto; min-width:80px; }
+  #canvasContainer { flex:1; display:flex; justify-content:center; padding:10px; }
+  canvas { border:1px solid #555; background:#111; width:100%; height:auto; touch-action:none; }
+  #waveform { display:none; max-width:100%; margin:auto; background:#222; padding:10px; }
+  #results, #netlist { max-width:1200px; margin:auto; background:#333; padding:10px; font-family:monospace; font-size:0.9em; white-space:pre-wrap; overflow-x:auto; }
+  #contextMenu { position:absolute; display:none; background:#333; border:1px solid #666; padding:5px; z-index:1000; }
+  #contextMenu div { padding:4px 10px; cursor:pointer; }
+  #contextMenu div:hover { background:#555; }
+</style>
+</head>
+<body>
+<header>
+<h1>Full Web LTspice</h1>
+<div>Design, simulate, and view waveforms</div>
+</header>
+
+<div id="toolbar">
+<button data-action="select">Select</button>
+<button data-action="addResistor">Resistor</button>
+<button data-action="addVoltage">V Source</button>
+<button data-action="addCapacitor">Capacitor</button>
+<button data-action="addInductor">Inductor</button>
+<button data-action="addDiode">Diode</button>
+<button data-action="addGround">GND</button>
+<button data-action="addWire">Wire</button>
+<button id="runAnalysis">Run Analysis</button>
+<button id="exportNetlist">Export Netlist</button>
+<button id="importNetlist">Import Netlist</button>
+<button id="showWaveform">Show Waveform</button>
+<button id="clear">Clear All</button>
+</div>
+
+<div id="canvasContainer">
+<canvas id="schematicCanvas"></canvas>
+</div>
+
+<div id="waveform">
+<h3 style="text-align:center;">Waveform (Placeholder)</h3>
+<canvas id="waveCanvas"></canvas>
+</div>
+
+<pre id="netlist"></pre>
+<div id="results"></div>
+<input type="file" id="importFile" style="display:none;"/>
+<div id="contextMenu"></div>
+
+<script>
+const canvas=document.getElementById('schematicCanvas');
+const ctx=canvas.getContext('2d');
+let mode='select';
+let currentComponentType=null;
+let components=[]; // {id,type,x,y,props,node1,node2}
+let wires=[];      // {x1,y1,x2,y2,connections}
+let tempWire=null;
+let selectedComponent=null;
+let isDragging=false;
+let dragOffset={x:0,y:0};
+let componentId=1;
+const waveCanvas=document.getElementById('waveCanvas');
+const waveCtx=waveCanvas.getContext('2d');
+let showWaveform=false;
+
+function resizeCanvas() {
+  const container=document.getElementById('canvasContainer');
+  canvas.width=container.offsetWidth;
+  canvas.height=500;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function getPos(e) {
+  if(e.touches){return {x:e.touches[0].clientX,y:e.touches[0].clientY};}
+  return {x:e.clientX,y:e.clientY};
+}
+
+function findComponentAt(x,y) {
+  for(const c of components) {
+    if(x>=c.x-30&&x<=c.x+30&&y>=c.y-30&&y<=c.y+30) return c;
+  }
+  return null;
+}
+
+// Toolbar
+document.querySelectorAll('#toolbar button').forEach(btn=>{
+  const action=btn.dataset.action;
+  if(action) btn.onclick=()=>{mode='placing';currentComponentType=action;};
+});
+document.getElementById('runAnalysis').onclick=runAnalysis;
+document.getElementById('exportNetlist').onclick=exportNetlist;
+document.getElementById('importNetlist').onclick=()=>document.getElementById('importFile').click();
+document.getElementById('importFile').onchange=e=>importNetlist(e.target.files[0]);
+document.getElementById('showWaveform').onclick=toggleWaveform;
+document.getElementById('clear').onclick=()=>{components=[];wires=[];selectedComponent=null;draw();document.getElementById('results').innerText='';};
+
+// Interaction
+canvas.addEventListener('mousedown',startInteraction);
+canvas.addEventListener('mousemove',moveInteraction);
+canvas.addEventListener('mouseup',endInteraction);
+canvas.addEventListener('contextmenu',showContextMenu);
+
+function startInteraction(e){
+  e.preventDefault();
+  const p=getPos(e);
+  const rect=canvas.getBoundingClientRect();
+  const x=p.x-rect.left,y=p.y-rect.top;
+  if(mode==='placing'){
+    const c=createComponent(currentComponentType,x,y);
+    components.push(c);
+    draw();
+  } else {
+    const c=findComponentAt(x,y);
+    if(c){
+      selectedComponent=c;
+      isDragging=true;
+      dragOffset.x=x-c.x;
+      dragOffset.y=y-c.y;
+    } else {
+      tempWire={x1:x,y1:y,x2:x,y2:y};
+    }
+  }
+}
+
+function moveInteraction(e){
+  const p=getPos(e);
+  const rect=canvas.getBoundingClientRect();
+  const x=p.x-rect.left,y=p.y-rect.top;
+  if(isDragging && selectedComponent){
+    selectedComponent.x=x-dragOffset.x;
+    selectedComponent.y=y-dragOffset.y;
+    draw();
+  } else if(tempWire){
+    tempWire.x2=x;tempWire.y2=y;
+    draw();
+  }
+}
+
+function endInteraction(e){
+  if(isDragging){isDragging=false;}
+  if(tempWire){
+    const c=findComponentAt(tempWire.x2,tempWire.y2);
+    if(c && selectedComponent && c!==selectedComponent){
+      wires.push({...tempWire,connections:[{component:selectedComponent},{component:c}]});
+    } else {
+      wires.push({...tempWire,connections:[]});
+    }
+    tempWire=null;
+    draw();
+  }
+}
+
+// Components
+function createComponent(type,x,y){
+  let defaults={};
+  if(type==='addResistor') defaults={value:1000};
+  if(type==='addVoltage') defaults={value:5};
+  if(type==='addCapacitor') defaults={value:1e-6};
+  if(type==='addInductor') defaults={value:1e-3};
+  return {id:componentId++,type,x,y,props:defaults};
+}
+
+function onComponentDoubleClick(c){
+  const v=prompt(`Value for ${c.type}`,c.props.value||"");
+  if(v!==null){c.props.value=parseFloat(v)||c.props.value;draw();}
+}
+
+canvas.addEventListener('dblclick',e=>{
+  const p=getPos(e);const rect=canvas.getBoundingClientRect();
+  const c=findComponentAt(p.x-rect.left,p.y-rect.top);
+  if(c) onComponentDoubleClick(c);
+});
+
+// Context Menu
+const menu=document.getElementById('contextMenu');
+function showContextMenu(e){
+  e.preventDefault();
+  const p=getPos(e);const rect=canvas.getBoundingClientRect();
+  const x=p.x-rect.left,y=p.y-rect.top;
+  const c=findComponentAt(x,y);
+  if(c){
+    selectedComponent=c;
+    menu.innerHTML='<div id="edit">Edit</div><div id="delete">Delete</div>';
+    menu.style.left=e.pageX+'px';menu.style.top=e.pageY+'px';
+    menu.style.display='block';
+    document.getElementById('edit').onclick=()=>{onComponentDoubleClick(c);menu.style.display='none';};
+    document.getElementById('delete').onclick=()=>{components=components.filter(cc=>cc!==c);draw();menu.style.display='none';};
+  }
+}
+window.addEventListener('click',()=>menu.style.display='none');
+
+// Drawing
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  wires.forEach(drawWire);
+  if(tempWire) drawWire(tempWire);
+  components.forEach(drawComponent);
+  if(selectedComponent) drawHighlight(selectedComponent);
+}
+function drawComponent(c){
+  ctx.save();ctx.translate(c.x,c.y);
+  ctx.font='12px Arial';ctx.textAlign='center';ctx.textBaseline='middle';
+  switch(c.type){
+    case'addResistor': ctx.strokeStyle='#0f0';ctx.strokeRect(-20,-10,40,20);ctx.fillStyle='#0f0';ctx.fillText('R'+c.id,0,-12);ctx.fillText((c.props.value||"")+"Ω",0,15);break;
+    case'addVoltage': ctx.strokeStyle='#ff0';ctx.beginPath();ctx.arc(0,0,20,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#ff0';ctx.fillText('V'+c.id,0,-12);ctx.fillText(c.props.value+'V',0,15);break;
+    case'addCapacitor': ctx.strokeStyle='#0ff';ctx.beginPath();ctx.moveTo(-10,-20);ctx.lineTo(-10,20);ctx.moveTo(10,-20);ctx.lineTo(10,20);ctx.stroke();ctx.fillStyle='#0ff';ctx.fillText('C'+c.id,0,-12);ctx.fillText(c.props.value+'F',0,15);break;
+    case'addInductor': ctx.strokeStyle='#f0f';ctx.beginPath();ctx.arc(-10,0,8,0,Math.PI*2);ctx.arc(0,0,8,0,Math.PI*2);ctx.arc(10,0,8,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#f0f';ctx.fillText('L'+c.id,0,-12);ctx.fillText(c.props.value+'H',0,15);break;
+    case'addDiode': ctx.strokeStyle='#fa0';ctx.beginPath();ctx.moveTo(-15,15);ctx.lineTo(15,0);ctx.lineTo(-15,-15);ctx.closePath();ctx.stroke();ctx.fillStyle='#fa0';ctx.fillText('D'+c.id,0,20);break;
+    case'addGround': ctx.strokeStyle='#888';ctx.moveTo(0,0);ctx.lineTo(0,15);ctx.stroke();ctx.moveTo(-10,15);ctx.lineTo(10,15);ctx.stroke();ctx.moveTo(-6,20);ctx.lineTo(6,20);ctx.stroke();ctx.fillStyle='#888';ctx.fillText('GND',0,30);break;
+  }
+  ctx.restore();
+}
+function drawWire(w){ctx.strokeStyle='#fff';ctx.beginPath();ctx.moveTo(w.x1,w.y1);ctx.lineTo(w.x2,w.y2);ctx.stroke();}
+function drawHighlight(c){ctx.strokeStyle='yellow';ctx.strokeRect(c.x-30,c.y-30,60,60);}
+
+// Waveform stub
+function toggleWaveform(){showWaveform=!showWaveform;document.getElementById('waveform').style.display=showWaveform?'block':'none';if(showWaveform)drawWaveform();}
+function drawWaveform(){
+  const ctxw=waveCtx;waveCanvas.width=600;waveCanvas.height=200;
+  ctxw.clearRect(0,0,waveCanvas.width,waveCanvas.height);
+  ctxw.strokeStyle='#0f0';ctxw.beginPath();
+  for(let x=0;x<waveCanvas.width;x++){
+    const y=100+Math.sin(x/40)*50;
+    if(x===0)ctxw.moveTo(x,y);else ctxw.lineTo(x,y);
+  }
+  ctxw.stroke();
+}
+
+// Netlist export/import
+function exportNetlist(){
+  let n='';
+  for(const c of components){
+    if(c.type==='addResistor') n+=`R${c.id} node${c.node1} node${c.node2} ${c.props.value}\n`;
+    if(c.type==='addVoltage') n+=`V${c.id} node${c.node1} node${c.node2} DC ${c.props.value}\n`;
+    if(c.type==='addCapacitor') n+=`C${c.id} node${c.node1} node${c.node2} ${c.props.value}\n`;
+    if(c.type==='addInductor') n+=`L${c.id} node${c.node1} node${c.node2} ${c.props.value}\n`;
+    if(c.type==='addDiode') n+=`D${c.id} node${c.node1} node${c.node2}\n`;
+  }
+  document.getElementById('netlist').innerText=n;
+}
+function importNetlist(file){
+  const r=new FileReader();
+  r.onload=function(){
+    components=[];wires=[];
+    const lines=r.result.split('\n');
+    lines.forEach(line=>{
+      const p=line.trim().split(/\s+/);if(!p[0]) return;
+      const t=p[0][0].toUpperCase(),id=parseInt(p[0].slice(1));
+      if(t==='R') components.push({id,type:'addResistor',x:100,y:100,props:{value:parseFloat(p[3])}});
+      if(t==='V') components.push({id,type:'addVoltage',x:200,y:100,props:{value:parseFloat(p[3])}});
+      if(t==='C') components.push({id,type:'addCapacitor',x:300,y:100,props:{value:parseFloat(p[3])}});
+      if(t==='L') components.push({id,type:'addInductor',x:400,y:100,props:{value:parseFloat(p[3])}});
+      if(t==='D') components.push({id,type:'addDiode',x:500,y:100,props:{}});
+    });
+    draw();
+  };
+  r.readAsText(file);
+}
+
+// ----------------------
+// DC Solver (Nodal)
+// ----------------------
+function solveLinear(A, b) {
+  const n=A.length;
+  for(let i=0;i<n;i++){
+    // pivot
+    let maxRow=i;
+    for(let k=i+1;k<n;k++){if(Math.abs(A[k][i])>Math.abs(A[maxRow][i]))maxRow=k;}
+    [A[i],A[maxRow]]=[A[maxRow],A[i]];
+    [b[i],b[maxRow]]=[b[maxRow],b[i]];
+    const div=A[i][i];
+    if(Math.abs(div)<1e-12) continue;
+    for(let j=i;j<n;j++) A[i][j]/=div;
+    b[i]/=div;
+    for(let k=0;k<n;k++){
+      if(k===i) continue;
+      const f=A[k][i];
+      for(let j=i;j<n;j++) A[k][j]-=f*A[i][j];
+      b[k]-=f*b[i];
+    }
+  }
+  return b;
+}
+
+function assignNodes() {
+  let nodes=[],nodeId=1;
+  function getNode(x,y){
+    for(const n of nodes){if(Math.hypot(n.x-x,n.y-y)<5) return n;}
+    const n={id:nodeId++,x,y};nodes.push(n);return n;
+  }
+  wires.forEach(w=>{
+    w.n1=getNode(w.x1,w.y1).id;
+    w.n2=getNode(w.x2,w.y2).id;
+  });
+  components.forEach(c=>{
+    const n1=getNode(c.x-20,c.y).id;
+    const n2=getNode(c.x+20,c.y).id;
+    c.node1=n1; c.node2=n2;
+    if(c.type==='addGround'){c.node1=0;c.node2=0;}
+  });
+  return nodes;
+}
+
+function runAnalysis(){
+  const nodes=assignNodes();
+  const N=nodes.length;
+  const G=[...Array(N)].map(()=>Array(N).fill(0));
+  const I=Array(N).fill(0);
+
+  components.forEach(c=>{
+    if(c.type==='addResistor'){
+      const n1=c.node1, n2=c.node2, R=c.props.value||1000;
+      const g=1/R;
+      if(n1>0){G[n1-1][n1-1]+=g;}
+      if(n2>0){G[n2-1][n2-1]+=g;}
+      if(n1>0 && n2>0){G[n1-1][n2-1]-=g;G[n2-1][n1-1]-=g;}
+    }
+  });
+
+  components.forEach(c=>{
+    if(c.type==='addVoltage'){
+      const n1=c.node1, n2=c.node2, V=c.props.value||0;
+      if(n1===0 && n2>0){ I[n2-1]-=V*1e9; G[n2-1][n2-1]+=1e9; }
+      else if(n2===0 && n1>0){ I[n1-1]+=V*1e9; G[n1-1][n1-1]+=1e9; }
+    }
+  });
+
+  const V=solveLinear(G.map(r=>[...r]), [...I]);
+  let out="DC Node Voltages:\n";
+  nodes.forEach((n,i)=>{
+    out+=`Node ${n.id}: ${(V[i]||0).toFixed(3)} V\n`;
+  });
+  document.getElementById('results').innerText=out;
+}
+</script>
+</body>
+</html>
