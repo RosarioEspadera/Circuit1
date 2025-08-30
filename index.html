@@ -10,7 +10,13 @@
   #toolbar { display:flex; flex-wrap:wrap; justify-content:center; background:#444; padding:10px; gap:5px; }
   #toolbar button { margin:5px; padding:8px; font-size:0.9em; cursor:pointer; flex:1 1 auto; min-width:80px; }
   #canvasContainer { flex:1; display:flex; justify-content:center; padding:10px; }
-  canvas { border:1px solid #555; background:#111; width:100%; height:auto; touch-action:none; }
+  canvas { 
+  border:1px solid #555; 
+  background:#fff;   /* instead of #111 */
+  width:100%; 
+  height:auto; 
+  touch-action:none; 
+}
   #waveform { display:none; max-width:100%; margin:auto; background:#222; padding:10px; }
   #results, #netlist { max-width:1200px; margin:auto; background:#333; padding:10px; font-family:monospace; font-size:0.9em; white-space:pre-wrap; overflow-x:auto; }
   #contextMenu { position:absolute; display:none; background:#333; border:1px solid #666; padding:5px; z-index:1000; }
@@ -223,7 +229,21 @@ function drawComponent(c){
   }
   ctx.restore();
 }
-function drawWire(w){ctx.strokeStyle='#fff';ctx.beginPath();ctx.moveTo(w.x1,w.y1);ctx.lineTo(w.x2,w.y2);ctx.stroke();}
+function drawWire(w){
+  ctx.strokeStyle='#000';
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(w.x1,w.y1);
+  ctx.lineTo(w.x2,w.y2);
+  ctx.stroke();
+  
+  ctx.fillStyle='#000';
+  ctx.beginPath();
+  ctx.arc(w.x1, w.y1, 3, 0, Math.PI*2);
+  ctx.arc(w.x2, w.y2, 3, 0, Math.PI*2);
+  ctx.fill();
+}
+
 function drawHighlight(c){ctx.strokeStyle='yellow';ctx.strokeRect(c.x-30,c.y-30,60,60);}
 
 // Waveform stub
