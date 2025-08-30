@@ -291,23 +291,40 @@ function solveLinear(A, b) {
 }
 
 function assignNodes() {
-  let nodes=[],nodeId=1;
-  function getNode(x,y){
-    for(const n of nodes){if(Math.hypot(n.x-x,n.y-y)<5) return n;}
-    const n={id:nodeId++,x,y};nodes.push(n);return n;
+  let nodeId = 1;
+  let points = []; // list of {x,y,node}
+
+  function getOrCreateNode(x,y){
+    for(const p of points){
+      if(Math.hypot(p.x-x,p.y-y)<5) return p.node;
+    }
+    const n=nodeId++;
+    points.push({x,y,node:n});
+    return n;
   }
+
+  // give every wire endpoint a node
   wires.forEach(w=>{
-    w.n1=getNode(w.x1,w.y1).id;
-    w.n2=getNode(w.x2,w.y2).id;
+    w.n1=getOrCreateNode(w.x1,w.y1);
+    w.n2=getOrCreateNode(w.x2,w.y2);
   });
+
+  // attach component pins to nearest node (or make new one)
   components.forEach(c=>{
-    const n1=getNode(c.x-20,c.y).id;
-    const n2=getNode(c.x+20,c.y).id;
-    c.node1=n1; c.node2=n2;
-    if(c.type==='addGround'){c.node1=0;c.node2=0;}
+    if(c.type==='addGround'){
+      c.node1=0; c.node2=0;
+    } else {
+      const n1=getOrCreateNode(c.x-20,c.y);
+      const n2=getOrCreateNode(c.x+20,c.y);
+      c.node1=n1;
+      c.node2=n2;
+    }
   });
-  return nodes;
+
+  // return a clean list of nodes (excluding ground=0)
+  return points.filter(p=>p.node>0).map(p=>({id:p.node,x:p.x,y:p.y}));
 }
+
 
 function runAnalysis(){
   const nodes=assignNodes();
