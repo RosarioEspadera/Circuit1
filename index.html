@@ -59,8 +59,8 @@ const canvas=document.getElementById('schematicCanvas');
 const ctx=canvas.getContext('2d');
 let mode='select';
 let currentComponentType=null;
-let components=[]; // {id,type,x,y,props,node1,node2}
-let wires=[];      // {x1,y1,x2,y2,connections}
+let components=[];
+let wires=[];
 let tempWire=null;
 let selectedComponent=null;
 let isDragging=false;
@@ -93,7 +93,17 @@ function findComponentAt(x,y) {
 // Toolbar
 document.querySelectorAll('#toolbar button').forEach(btn=>{
   const action=btn.dataset.action;
-  if(action) btn.onclick=()=>{mode='placing';currentComponentType=action;};
+  if(action){
+    btn.onclick=()=>{
+      if(action==="select"){
+        mode="select"; currentComponentType=null;
+      } else if(action==="addWire"){
+        mode="addWire"; currentComponentType=null;
+      } else {
+        mode="placing"; currentComponentType=action;
+      }
+    };
+  }
 });
 document.getElementById('runAnalysis').onclick=runAnalysis;
 document.getElementById('exportNetlist').onclick=exportNetlist;
@@ -117,15 +127,15 @@ function startInteraction(e){
     const c=createComponent(currentComponentType,x,y);
     components.push(c);
     draw();
-  } else {
+  } else if(mode==='addWire'){
+    tempWire={x1:x,y1:y,x2:x,y2:y};
+  } else if(mode==='select'){
     const c=findComponentAt(x,y);
     if(c){
       selectedComponent=c;
       isDragging=true;
       dragOffset.x=x-c.x;
       dragOffset.y=y-c.y;
-    } else {
-      tempWire={x1:x,y1:y,x2:x,y2:y};
     }
   }
 }
@@ -146,13 +156,8 @@ function moveInteraction(e){
 
 function endInteraction(e){
   if(isDragging){isDragging=false;}
-  if(tempWire){
-    const c=findComponentAt(tempWire.x2,tempWire.y2);
-    if(c && selectedComponent && c!==selectedComponent){
-      wires.push({...tempWire,connections:[{component:selectedComponent},{component:c}]});
-    } else {
-      wires.push({...tempWire,connections:[]});
-    }
+  if(mode==='addWire' && tempWire){
+    wires.push({...tempWire,connections:[]});
     tempWire=null;
     draw();
   }
@@ -271,7 +276,6 @@ function importNetlist(file){
 function solveLinear(A, b) {
   const n=A.length;
   for(let i=0;i<n;i++){
-    // pivot
     let maxRow=i;
     for(let k=i+1;k<n;k++){if(Math.abs(A[k][i])>Math.abs(A[maxRow][i]))maxRow=k;}
     [A[i],A[maxRow]]=[A[maxRow],A[i]];
@@ -292,7 +296,7 @@ function solveLinear(A, b) {
 
 function assignNodes() {
   let nodeId = 1;
-  let points = []; // list of {x,y,node}
+  let points = []; 
 
   function getOrCreateNode(x,y){
     for(const p of points){
@@ -303,13 +307,11 @@ function assignNodes() {
     return n;
   }
 
-  // give every wire endpoint a node
   wires.forEach(w=>{
     w.n1=getOrCreateNode(w.x1,w.y1);
     w.n2=getOrCreateNode(w.x2,w.y2);
   });
 
-  // attach component pins to nearest node (or make new one)
   components.forEach(c=>{
     if(c.type==='addGround'){
       c.node1=0; c.node2=0;
@@ -321,10 +323,8 @@ function assignNodes() {
     }
   });
 
-  // return a clean list of nodes (excluding ground=0)
   return points.filter(p=>p.node>0).map(p=>({id:p.node,x:p.x,y:p.y}));
 }
-
 
 function runAnalysis(){
   const nodes=assignNodes();
@@ -353,7 +353,7 @@ function runAnalysis(){
   const V=solveLinear(G.map(r=>[...r]), [...I]);
   let out="DC Node Voltages:\n";
   nodes.forEach((n,i)=>{
-    out+=`Node ${n.id}: ${(V[i]||0).toFixed(3)} V\n`;
+    out+=`Node ${n.id}: ${(V[i]||0).toFixed(4)} V\n`;
   });
   document.getElementById('results').innerText=out;
 }
